@@ -211,9 +211,19 @@ async function findNote(query: string, opts: { strict?: boolean } = {}): Promise
     }
   }
 
+  // A query naming directories is a path, not a title. If it didn't resolve
+  // above it is genuinely absent — falling through to fuzzy matching would
+  // hand back some unrelated note, which is worse than saying "not found".
+  if (/[/\\]/.test(needle)) return { file: null };
+
   const files = await walk(await canonicalRoot());
   const lower = needle.toLowerCase().replace(/\.md$/, "");
-  const byName = (f: string) => path.basename(f, ".md").toLowerCase();
+  // Agent Skills stores every skill as SKILL.md, so the bare basename is
+  // ambiguous across dozens of files. Match those on their folder instead.
+  const byName = (f: string) => {
+    const base = path.basename(f, ".md");
+    return (base.toLowerCase() === "skill" ? path.basename(path.dirname(f)) : base).toLowerCase();
+  };
 
   const exact = files.filter((f) => byName(f) === lower);
   if (exact.length === 1) return { file: exact[0] };

@@ -25,6 +25,7 @@ Operational rules:
 - Be a diligent note-taker. When the user describes a client, a project, a meeting outcome, a decision, a spec, or an idea worth keeping, write it to the vault without waiting to be asked, then confirm in one line: "Filed under Clients, Acme." Prefer appending to an existing note over creating a near-duplicate — search first when unsure.
 - Vault folder conventions: client work → "Clients/<Client Name>", product and startup work → "Projects/<Project Name>", meeting notes → "Meetings", raw ideas → "Ideas", daily logs → "Daily". Pass the folder when creating a note; folders are created automatically.
 - Linear is the issue tracker for real client and product work: "create_linear_issue", "list_linear_issues", "update_linear_issue", "comment_on_linear_issue", "list_linear_projects". Three places hold tasks, keep them straight — "add_todo" is the user's own quick personal list, Linear is trackable work with a team and a workflow state, and the vault is for documents. If it sounds like client or product work, put it in Linear and say so.
+- Starting a client website: gather the client and project details from Airtable first, read any matching skill, then call "start_website_build". It creates the folder and writes AGENTS.md — it does NOT build the site. Tell the user the folder is ready to open in their editor, where the coding agent takes over.
 - Airtable is the user's structured store — client lists, pipelines, trackers: "list_airtable_bases", "describe_airtable_base", "list_airtable_records", "create_airtable_record", "update_airtable_record". Before writing a record you MUST call "describe_airtable_base" and use the exact field names it returns; Airtable rejects unknown keys, and guessing wastes the user's time. To change a row, call "list_airtable_records" first to get its id.
 - "list_airtable_records" truncates long values so it stays readable. When the user wants the actual contents of a field — a drafted email, notes, a full description — call "read_airtable_record" with that row's id instead.
 - Never read Airtable base, table, or record ids aloud — refer to things by name: "the Clients table in Agency OS." Summarize records rather than reciting every field.
@@ -442,6 +443,37 @@ export const JARVIS_TOOLS = [
         },
       },
       required: ["record_id", "fields"],
+    },
+  },
+  {
+    type: "function",
+    name: "start_website_build",
+    description:
+      "Scaffold a new client website project on disk and write the brief the coding agent reads on open. Gather the client's details from Airtable first so the brief is real, then confirm the project name before calling. Never overwrites an existing project folder.",
+    parameters: {
+      type: "object",
+      properties: {
+        client: { type: "string", description: "Client name, e.g. 'Sparkle Clean'." },
+        project_name: {
+          type: "string",
+          description: "Folder name for the build. Defaults to the client name.",
+        },
+        company: { type: "string", description: "Legal or trading company name, if different." },
+        website: { type: "string", description: "Existing website URL, if they have one." },
+        contact: { type: "string", description: "Primary contact person." },
+        email: { type: "string", description: "Contact email." },
+        requirements: {
+          type: "string",
+          description:
+            "What the site needs, in Markdown. Pull this from the Airtable project record where possible rather than inventing it.",
+        },
+        notes: { type: "string", description: "Anything else the coding agent should know." },
+        stack: {
+          type: "string",
+          description: "Tech stack. Defaults to Next.js App Router + TypeScript + Tailwind.",
+        },
+      },
+      required: ["client"],
     },
   },
   {

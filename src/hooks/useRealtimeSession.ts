@@ -21,17 +21,19 @@ interface RealtimeSession {
 }
 
 /**
- * Tools served by the Next.js server instead of Convex. The Obsidian vault
- * lives on the operator's local disk, which Convex actions cannot reach, so
- * these dispatch to /api/obsidian rather than api.tools.execute.
+ * Tools served by the Next.js server instead of Convex. Both the Obsidian
+ * vault and the client projects folder live on the operator's local disk,
+ * which Convex actions cannot reach, so these dispatch to a local route
+ * rather than api.tools.execute.
  */
-const VAULT_TOOLS = new Set([
-  "search_vault",
-  "list_vault_notes",
-  "read_vault_note",
-  "create_vault_note",
-  "append_vault_note",
-]);
+const LOCAL_TOOL_ROUTES: Record<string, string> = {
+  search_vault: "/api/obsidian",
+  list_vault_notes: "/api/obsidian",
+  read_vault_note: "/api/obsidian",
+  create_vault_note: "/api/obsidian",
+  append_vault_note: "/api/obsidian",
+  start_website_build: "/api/projects",
+};
 
 /** Upper bound on a local vault call before we report back and move on. */
 const VAULT_TIMEOUT_MS = 20000;
@@ -157,13 +159,14 @@ export function useRealtimeSession(): RealtimeSession {
       }
       let result: Record<string, unknown>;
       try {
-        if (VAULT_TOOLS.has(name)) {
-          // A hung vault request would leave the model waiting forever for a
+        const localRoute = LOCAL_TOOL_ROUTES[name];
+        if (localRoute) {
+          // A hung local request would leave the model waiting forever for a
           // function_call_output, so bound it and always resolve to a result.
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), VAULT_TIMEOUT_MS);
           try {
-            const res = await fetch("/api/obsidian", {
+            const res = await fetch(localRoute, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -208,12 +211,19 @@ export function useRealtimeSession(): RealtimeSession {
       if (result && (result as any).ok) {
         setOrb("success", { flashBackTo: "thinking", flashMs: 900 });
         if (
-          (name === "create_vault_note" || name === "append_vault_note") &&
+          (name === "create_vault_note" ||
+            name === "append_vault_note" ||
+            name === "start_website_build") &&
           (result as any).path
         ) {
           void logTimeline({
-            kind: "vault_write",
-            label: name === "create_vault_note" ? "Note created" : "Note updated",
+            kind: name === "start_website_build" ? "project_scaffolded" : "vault_write",
+            label:
+              name === "create_vault_note"
+                ? "Note created"
+                : name === "append_vault_note"
+                  ? "Note updated"
+                  : "Project scaffolded",
             detail: String((result as any).path),
           }).catch(() => {});
         }

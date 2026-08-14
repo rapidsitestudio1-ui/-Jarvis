@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { JARVIS_INSTRUCTIONS, JARVIS_TOOLS } from "@/lib/jarvisTools";
+import { listSkills, renderSkillIndex } from "@/lib/skills";
 import { api } from "../../../../../convex/_generated/api";
 
 /**
@@ -53,6 +54,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
+  // Only names and descriptions go in the prompt; bodies load on demand via
+  // read_vault_note, so the prompt stays flat as the skill library grows.
+  let skillSection = "";
+  try {
+    skillSection = renderSkillIndex(await listSkills());
+  } catch {
+    /* skills are optional — never block a session on them */
+  }
+
   const now = new Date();
   const sessionConfig = {
     session: {
@@ -61,6 +71,7 @@ export async function POST(request: NextRequest) {
       instructions:
         JARVIS_INSTRUCTIONS +
         profileSection +
+        skillSection +
         `\n\nCurrent date and time: ${now.toString()}. Use this to resolve relative dates.`,
       tools: JARVIS_TOOLS,
       audio: {

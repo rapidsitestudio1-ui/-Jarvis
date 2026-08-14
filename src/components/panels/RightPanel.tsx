@@ -20,6 +20,7 @@ import {
   Newspaper,
   Activity,
   NotebookPen,
+  FolderPlus,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import { useNow } from "@/hooks/useNow";
@@ -40,6 +41,7 @@ const KIND_META: Record<string, { icon: React.ReactNode; color: string }> = {
   memory_updated: { icon: <Brain />, color: "text-fuchsia-300" },
   briefing: { icon: <Newspaper />, color: "text-cyan-300" },
   vault_write: { icon: <NotebookPen />, color: "text-emerald-300" },
+  project_scaffolded: { icon: <FolderPlus />, color: "text-cyan-300" },
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
