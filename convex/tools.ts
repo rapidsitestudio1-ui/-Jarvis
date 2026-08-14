@@ -187,6 +187,42 @@ export function shapeIssues(
 }
 
 /* ------------------------------------------------------------------ */
+/* Airtable helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Composio nests Airtable's REST payload under `data.response_data`, but some
+ * actions return it flat. Unwrap either shape before reading collections.
+ */
+function airtableBody(data: any): any {
+  return data?.response_data ?? data ?? {};
+}
+
+/**
+ * Record field values can be long (rich text, attachment arrays). This is
+ * read aloud and forwarded to the model, so each value is stringified and capped.
+ */
+export function shapeRecords(
+  data: any,
+  limit = 10
+): {
+  count: number;
+  records: { id?: string; fields: Record<string, string> }[];
+} {
+  const body = airtableBody(data);
+  const items = firstNonEmpty(body?.records, body?.items, Array.isArray(body) ? body : []);
+  const records = items.slice(0, limit).map((r: any) => {
+    const fields: Record<string, string> = {};
+    for (const [k, v] of Object.entries(r?.fields ?? {})) {
+      const s = typeof v === "string" ? v : JSON.stringify(v);
+      fields[k] = String(s ?? "").slice(0, 200);
+    }
+    return { id: r?.id ?? undefined, fields };
+  });
+  return { count: records.length, records };
+}
+
+/* ------------------------------------------------------------------ */
 /* Dispatcher                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -360,6 +396,126 @@ export const execute = action({
         };
       }
       return { issue: { id: hit.id, title: hit.title, key: hit.key } };
+    };
+
+    /* ------------ Airtable plumbing ------------ */
+
+    const airtableExec = async (slug: string, callArgs: Record<string, unknown>) => {
+      const composio = getComposio();
+      return await composio.tools.execute(slug, {
+        userId: String(userId),
+        dangerouslySkipVersionCheck: true,
+        arguments: callArgs,
+      });
+    };
+
+    const airtableBases = async (): Promise<{
+      bases?: { id: string; name: string }[];
+      error?: ToolResult;
+    }> => {
+      const r = await airtableExec("AIRTABLE_LIST_BASES", {});
+      if (!r.successful) {
+        return {
+          error: { error: "tool_failed", message: r.error ?? "Could not list Airtable bases" },
+        };
+      }
+      const body = airtableBody(r.data);
+      return {
+        bases: firstNonEmpty(body?.bases, body?.items)
+          .filter((b: any) => b?.id)
+          .map((b: any) => ({ id: b.id, name: b.name ?? "(unnamed)" })),
+      };
+    };
+
+    /** Resolve a spoken base name to its appXXXX id. */
+    const resolveBase = async (
+      spoken: unknown
+    ): Promise<{ base?: { id: string; name: string }; error?: ToolResult }> => {
+      const { bases, error } = await airtableBases();
+      if (error) return { error };
+      if (bases!.length === 0) {
+        return {
+          error: { error: "no_bases", message: "No Airtable bases are visible on this account." },
+        };
+      }
+      // One base is the common case for a small agency — don't make them say it.
+      if (!spoken) {
+        if (bases!.length === 1) return { base: bases![0] };
+        return {
+          error: {
+            error: "base_ambiguous",
+            message: `Which base? Options: ${bases!.map((b) => b.name).join(", ")}.`,
+          },
+        };
+      }
+      const hit = bestMatch(bases!, String(spoken), (b) => b.name);
+      if (!hit) {
+        return {
+          error: {
+            error: "base_not_found",
+            message: `No Airtable base matching "${spoken}". Options: ${bases!.map((b) => b.name).join(", ")}.`,
+          },
+        };
+      }
+      return { base: hit };
+    };
+
+    const airtableTables = async (
+      baseId: string
+    ): Promise<{
+      tables?: { id: string; name: string; fields: string[] }[];
+      error?: ToolResult;
+    }> => {
+      const r = await airtableExec("AIRTABLE_GET_BASE_SCHEMA", { baseId });
+      if (!r.successful) {
+        return {
+          error: { error: "tool_failed", message: r.error ?? "Could not read the base schema" },
+        };
+      }
+      const body = airtableBody(r.data);
+      return {
+        tables: firstNonEmpty(body?.tables, body?.items)
+          .filter((t: any) => t?.id || t?.name)
+          .map((t: any) => ({
+            id: t.id ?? t.name,
+            name: t.name ?? "(unnamed)",
+            fields: (t.fields ?? []).map((f: any) => f?.name).filter(Boolean),
+          })),
+      };
+    };
+
+    /**
+     * Airtable accepts a table name or id, but resolving first lets the user
+     * say "clients" and hit "Clients", and surfaces the real options on a miss.
+     */
+    const resolveTable = async (
+      baseId: string,
+      spoken: unknown
+    ): Promise<{ table?: { id: string; name: string; fields: string[] }; error?: ToolResult }> => {
+      const { tables, error } = await airtableTables(baseId);
+      if (error) return { error };
+      if (tables!.length === 0) {
+        return { error: { error: "no_tables", message: "That base has no tables." } };
+      }
+      if (!spoken) {
+        if (tables!.length === 1) return { table: tables![0] };
+        return {
+          error: {
+            error: "table_ambiguous",
+            message: `Which table? Options: ${tables!.map((t) => t.name).join(", ")}.`,
+          },
+        };
+      }
+      const hit = bestMatch(tables!, String(spoken), (t) => t.name);
+      if (!hit) {
+        return {
+          error: {
+            error: "table_not_found",
+            message: `No table matching "${spoken}". Options: ${tables!.map((t) => t.name).join(", ")}.`,
+          },
+        };
+      }
+      return { table: hit };
     };
 
     const finish = async (result: ToolResult, objectiveDone = "Standing by") => {
@@ -881,6 +1037,191 @@ export const execute = action({
           });
         }
 
+        /* ---------------- airtable ---------------- */
+        case "list_airtable_bases": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          await setObjective("Reading Airtable");
+          await log("executing", "Executing action", "Listing Airtable bases");
+          const { bases, error } = await airtableBases();
+          if (error) return error;
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({ ok: true, count: bases!.length, bases: bases!.map((b) => b.name) });
+        }
+
+        case "describe_airtable_base": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          await setObjective("Reading Airtable schema");
+          const { base, error: baseErr } = await resolveBase(args.base);
+          if (baseErr) return baseErr;
+          await log("executing", "Executing action", `Reading schema for ${base!.name}`);
+          const { tables, error: tableErr } = await airtableTables(base!.id);
+          if (tableErr) return tableErr;
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({
+            ok: true,
+            base: base!.name,
+            tables: tables!.map((t) => ({ table: t.name, fields: t.fields })),
+          });
+        }
+
+        case "list_airtable_records": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          await setObjective("Reading Airtable records");
+          const { base, error: baseErr } = await resolveBase(args.base);
+          if (baseErr) return baseErr;
+          const { table, error: tableErr } = await resolveTable(base!.id, args.table);
+          if (tableErr) return tableErr;
+
+          // Airtable caps pageSize at 100; keep the spoken default small.
+          const requested = Number(args.limit);
+          const limit =
+            args.limit === undefined || args.limit === null || !Number.isFinite(requested)
+              ? 10
+              : Math.min(100, Math.max(1, Math.trunc(requested)));
+
+          await log("executing", "Executing action", `Reading ${table!.name} in ${base!.name}`);
+          const result = await airtableExec("AIRTABLE_LIST_RECORDS", {
+            baseId: base!.id,
+            tableIdOrName: table!.name,
+            maxRecords: limit,
+            pageSize: limit,
+          });
+          if (!result.successful) return { error: "tool_failed", message: result.error };
+
+          let shaped = shapeRecords(result.data, limit);
+          // Building Airtable formulas from speech is error-prone; filter here.
+          const q = String(args.query ?? "").trim().toLowerCase();
+          if (q) {
+            const hits = shaped.records.filter((r) =>
+              Object.values(r.fields).some((v) => v.toLowerCase().includes(q))
+            );
+            shaped = { count: hits.length, records: hits };
+          }
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({ ok: true, base: base!.name, table: table!.name, ...shaped });
+        }
+
+        case "read_airtable_record": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          const recordId = String(args.record_id ?? "").trim();
+          if (!recordId) {
+            return {
+              error: "missing_record",
+              message:
+                "Which record? Call list_airtable_records first and use the id from the result.",
+            };
+          }
+          await setObjective("Reading Airtable record");
+          const { base, error: baseErr } = await resolveBase(args.base);
+          if (baseErr) return baseErr;
+          const { table, error: tableErr } = await resolveTable(base!.id, args.table);
+          if (tableErr) return tableErr;
+
+          await log("executing", "Executing action", `Reading a row from ${table!.name}`);
+          const result = await airtableExec("AIRTABLE_GET_RECORD", {
+            baseId: base!.id,
+            tableIdOrName: table!.name,
+            recordId,
+          });
+          if (!result.successful) return { error: "tool_failed", message: result.error };
+
+          // Unlike the list view, a single record keeps its long text intact —
+          // that's the whole point of reading one. Cap only to stay under the
+          // function-output limit.
+          const body = airtableBody(result.data);
+          const raw = body?.fields ?? body?.record?.fields ?? {};
+          const fields: Record<string, string> = {};
+          let budget = 20000;
+          for (const [k, v] of Object.entries(raw)) {
+            if (budget <= 0) break;
+            const s = typeof v === "string" ? v : JSON.stringify(v);
+            const value = String(s ?? "").slice(0, budget);
+            fields[k] = value;
+            budget -= value.length;
+          }
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({
+            ok: true,
+            base: base!.name,
+            table: table!.name,
+            record_id: body?.id ?? recordId,
+            fields,
+          });
+        }
+
+        case "create_airtable_record": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          const fields = args.fields;
+          if (!fields || typeof fields !== "object" || Array.isArray(fields) || !Object.keys(fields).length) {
+            return {
+              error: "missing_fields",
+              message:
+                "A record needs at least one field. Call describe_airtable_base first to learn the field names.",
+            };
+          }
+          await setObjective("Adding Airtable record");
+          const { base, error: baseErr } = await resolveBase(args.base);
+          if (baseErr) return baseErr;
+          const { table, error: tableErr } = await resolveTable(base!.id, args.table);
+          if (tableErr) return tableErr;
+
+          await log("executing", "Executing action", `Adding a row to ${table!.name}`);
+          const result = await airtableExec("AIRTABLE_CREATE_RECORD", {
+            baseId: base!.id,
+            tableIdOrName: table!.name,
+            fields,
+          });
+          if (!result.successful) return { error: "tool_failed", message: result.error };
+          const body = airtableBody(result.data);
+          await log("completed", "Record created", `${table!.name} in ${base!.name}`);
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({
+            ok: true,
+            base: base!.name,
+            table: table!.name,
+            record_id: body?.id ?? body?.record?.id ?? undefined,
+          });
+        }
+
+        case "update_airtable_record": {
+          const blocked = await requireConnection("airtable");
+          if (blocked) return blocked;
+          const recordId = String(args.record_id ?? "").trim();
+          if (!recordId) {
+            return {
+              error: "missing_record",
+              message:
+                "Which record? Call list_airtable_records first and use the id from the result.",
+            };
+          }
+          const fields = args.fields;
+          if (!fields || typeof fields !== "object" || Array.isArray(fields) || !Object.keys(fields).length) {
+            return { error: "missing_fields", message: "Nothing to change — no fields were given." };
+          }
+          await setObjective("Updating Airtable record");
+          const { base, error: baseErr } = await resolveBase(args.base);
+          if (baseErr) return baseErr;
+          const { table, error: tableErr } = await resolveTable(base!.id, args.table);
+          if (tableErr) return tableErr;
+
+          await log("executing", "Executing action", `Updating a row in ${table!.name}`);
+          const result = await airtableExec("AIRTABLE_UPDATE_RECORD", {
+            baseId: base!.id,
+            tableIdOrName: table!.name,
+            recordId,
+            fields,
+          });
+          if (!result.successful) return { error: "tool_failed", message: result.error };
+          await log("completed", "Record updated", `${table!.name} in ${base!.name}`);
+          await ctx.runMutation(api.connections.touchSync, { toolkit: "airtable" });
+          return finish({ ok: true, base: base!.name, table: table!.name, record_id: recordId });
+        }
+
         /* ---------------- briefing ---------------- */
         case "prepare_daily_briefing": {
           const briefing: any = await ctx.runAction(api.briefing.run, {});
@@ -918,6 +1259,7 @@ function resolveServiceSlug(input: string): string | null {
   if (s.includes("calendar")) return "googlecalendar";
   if (s.includes("notion") || s.includes("note")) return "notion";
   if (s.includes("linear") || s.includes("issue") || s.includes("ticket")) return "linear";
+  if (s.includes("airtable") || s.includes("air table") || s.includes("base")) return "airtable";
   if (SERVICES[s]) return s;
   return null;
 }

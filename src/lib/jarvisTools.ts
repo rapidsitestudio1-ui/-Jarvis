@@ -25,6 +25,9 @@ Operational rules:
 - Be a diligent note-taker. When the user describes a client, a project, a meeting outcome, a decision, a spec, or an idea worth keeping, write it to the vault without waiting to be asked, then confirm in one line: "Filed under Clients, Acme." Prefer appending to an existing note over creating a near-duplicate — search first when unsure.
 - Vault folder conventions: client work → "Clients/<Client Name>", product and startup work → "Projects/<Project Name>", meeting notes → "Meetings", raw ideas → "Ideas", daily logs → "Daily". Pass the folder when creating a note; folders are created automatically.
 - Linear is the issue tracker for real client and product work: "create_linear_issue", "list_linear_issues", "update_linear_issue", "comment_on_linear_issue", "list_linear_projects". Three places hold tasks, keep them straight — "add_todo" is the user's own quick personal list, Linear is trackable work with a team and a workflow state, and the vault is for documents. If it sounds like client or product work, put it in Linear and say so.
+- Airtable is the user's structured store — client lists, pipelines, trackers: "list_airtable_bases", "describe_airtable_base", "list_airtable_records", "create_airtable_record", "update_airtable_record". Before writing a record you MUST call "describe_airtable_base" and use the exact field names it returns; Airtable rejects unknown keys, and guessing wastes the user's time. To change a row, call "list_airtable_records" first to get its id.
+- "list_airtable_records" truncates long values so it stays readable. When the user wants the actual contents of a field — a drafted email, notes, a full description — call "read_airtable_record" with that row's id instead.
+- Never read Airtable base, table, or record ids aloud — refer to things by name: "the Clients table in Agency OS." Summarize records rather than reciting every field.
 - Never read Linear issue ids aloud. Refer to issues by their key and title: "ACM-12, the checkout bug." Before updating an issue, call "list_linear_issues" if you are not certain which one they mean, and confirm the match in one line.
 - Division of labour between memory and the vault: short facts about the user ("prefers Cursor", "based in Nairobi") go to "remember". Anything with substance — notes, plans, specs, meeting records, research — goes to the vault.
 - Report failures honestly and suggest the next step. Never invent data.`;
@@ -342,6 +345,104 @@ export const JARVIS_TOOLS = [
     description:
       "List the projects and teams in the user's Linear workspace. Use when they ask what's in Linear, or to confirm a project name before filing.",
     parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "list_airtable_bases",
+    description:
+      "List the Airtable bases the user can access. Use when they ask what's in their Airtable, or to confirm a base name.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "describe_airtable_base",
+    description:
+      "List the tables in an Airtable base and the field names in each. ALWAYS call this before creating or updating a record, so you use real field names rather than guessing.",
+    parameters: {
+      type: "object",
+      properties: {
+        base: {
+          type: "string",
+          description: "Base name. Omit it — if there is only one base it is chosen automatically.",
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "list_airtable_records",
+    description:
+      "Read rows from an Airtable table, optionally narrowed by a text query matched against every field value. Returns each record's id, which is required to update it.",
+    parameters: {
+      type: "object",
+      properties: {
+        base: { type: "string", description: "Base name. Matched loosely." },
+        table: { type: "string", description: "Table name, e.g. 'Clients'. Matched loosely." },
+        query: { type: "string", description: "Text to look for across all field values." },
+        limit: { type: "number", description: "Max records to fetch (default 10, max 100)." },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "read_airtable_record",
+    description:
+      "Read one Airtable record in full, with long text fields intact. Use this when the user wants the actual contents of a field — a drafted email, notes, a description — since list_airtable_records truncates values for brevity.",
+    parameters: {
+      type: "object",
+      properties: {
+        base: { type: "string", description: "Base name." },
+        table: { type: "string", description: "Table name." },
+        record_id: {
+          type: "string",
+          description: "Airtable record id (starts with 'rec'), from list_airtable_records.",
+        },
+      },
+      required: ["record_id"],
+    },
+  },
+  {
+    type: "function",
+    name: "create_airtable_record",
+    description:
+      "Add a row to an Airtable table. Call describe_airtable_base first to learn the exact field names — a wrong key is rejected by Airtable.",
+    parameters: {
+      type: "object",
+      properties: {
+        base: { type: "string", description: "Base name." },
+        table: { type: "string", description: "Table name." },
+        fields: {
+          type: "object",
+          description:
+            "Field name to value, e.g. {\"Name\": \"Acme Corp\", \"Status\": \"Lead\"}. Keys must match the table's real field names.",
+          additionalProperties: true,
+        },
+      },
+      required: ["fields"],
+    },
+  },
+  {
+    type: "function",
+    name: "update_airtable_record",
+    description:
+      "Change fields on an existing Airtable row. Get record_id from list_airtable_records first. Only the fields you pass are modified.",
+    parameters: {
+      type: "object",
+      properties: {
+        base: { type: "string", description: "Base name." },
+        table: { type: "string", description: "Table name." },
+        record_id: {
+          type: "string",
+          description: "Airtable record id (starts with 'rec'), from list_airtable_records.",
+        },
+        fields: {
+          type: "object",
+          description: "Field name to new value. Only these fields change.",
+          additionalProperties: true,
+        },
+      },
+      required: ["record_id", "fields"],
+    },
   },
   {
     type: "function",
