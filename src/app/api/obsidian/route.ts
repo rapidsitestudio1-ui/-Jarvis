@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
 import {
   appendVaultNote,
   createVaultNote,
@@ -8,14 +7,15 @@ import {
   searchVault,
   vaultRoot,
 } from "@/lib/obsidian";
-import { api } from "../../../../convex/_generated/api";
+import { requireOperator } from "@/lib/localAuth";
 
 /**
  * Vault tool dispatcher. These tools can't live in Convex like the rest —
  * Convex actions have no access to the operator's local disk — so the Next.js
  * server (which runs on the same machine as the vault) handles them instead.
  *
- * Same auth contract as the Realtime token route: a valid Convex Auth JWT.
+ * The vault belongs to the host rather than to an account, so being signed in
+ * is not enough: the caller must be the configured operator.
  */
 
 export const runtime = "nodejs";
@@ -24,21 +24,8 @@ export const dynamic = "force-dynamic";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  const jwt = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!jwt) {
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
-  try {
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-    convex.setAuth(jwt);
-    const user = await convex.query(api.auth.me, {});
-    if (!user) {
-      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-    }
-  } catch {
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
+  const auth = await requireOperator(request.headers.get("authorization"), "vault");
+  if (!auth.ok) return auth.response;
 
   let name: string;
   let args: any;

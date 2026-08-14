@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ConvexHttpClient } from "convex/browser";
 import { projectsRoot, startWebsiteBuild } from "@/lib/projects";
-import { api } from "../../../../convex/_generated/api";
+import { requireOperator } from "@/lib/localAuth";
 
 /**
  * Client-project scaffolding. Same reasoning and auth contract as the vault
  * route: Convex actions cannot reach local disk, so this runs in the Next.js
- * process on the operator's machine behind a valid Convex Auth JWT.
+ * process on the operator's machine. This folder belongs to the host rather
+ * than to an account, so the caller must be the operator, not merely signed in.
  */
 
 export const runtime = "nodejs";
@@ -15,21 +15,8 @@ export const dynamic = "force-dynamic";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export async function POST(request: NextRequest) {
-  const authHeader = request.headers.get("authorization");
-  const jwt = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!jwt) {
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
-  try {
-    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
-    convex.setAuth(jwt);
-    const user = await convex.query(api.auth.me, {});
-    if (!user) {
-      return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-    }
-  } catch {
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
+  const auth = await requireOperator(request.headers.get("authorization"), "projects");
+  if (!auth.ok) return auth.response;
 
   let name: string;
   let args: any;
