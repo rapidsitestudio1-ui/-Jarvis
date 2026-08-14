@@ -105,14 +105,32 @@ function sanitizeSegment(segment: string): string {
   return cleaned.slice(0, 120);
 }
 
-/** Sanitize a folder path segment by segment, e.g. "Clients/Acme Corp". */
+/**
+ * Sanitize a folder path segment by segment, e.g. "Clients/Acme Corp".
+ *
+ * Hidden and skipped segments are dropped before sanitising, since
+ * sanitizeSegment only strips *trailing* dots — ".obsidian" would otherwise
+ * survive intact and let a caller write into, or enumerate, the very
+ * directories walk() and isVisibleNotePath() exist to keep out of reach.
+ */
 function sanitizeFolder(folder: string | undefined): string {
   if (!folder) return "";
   return folder
     .split(/[/\\]+/)
+    .filter((raw) => {
+      const segment = raw.trim();
+      return segment !== "" && !segment.startsWith(".") && !SKIP_DIRS.has(segment);
+    })
     .map((s) => sanitizeSegment(s))
     .filter((s) => s && s !== "Untitled")
     .join("/");
+}
+
+/** Clamp a caller-supplied count to a usable integer, so slice() can't invert. */
+function normalizeLimit(value: unknown, fallback: number, cap: number): number {
+  const n = Number(value);
+  if (value === undefined || value === null || !Number.isFinite(n)) return fallback;
+  return Math.min(cap, Math.max(1, Math.trunc(n)));
 }
 
 async function walk(dir: string, out: string[] = [], depth = 0): Promise<string[]> {
@@ -142,8 +160,11 @@ async function readCapped(absPath: string): Promise<string> {
     const handle = await fs.open(absPath, "r");
     try {
       const buf = Buffer.alloc(MAX_FILE_BYTES);
-      await handle.read(buf, 0, MAX_FILE_BYTES, 0);
-      return buf.toString("utf8") + "\n\n…[truncated]";
+      // Decode only what was actually read. The buffer is zero-filled, so if
+      // the file shrank since stat() the tail would decode as NUL characters
+      // and end up in search results and model output.
+      const { bytesRead } = await handle.read(buf, 0, MAX_FILE_BYTES, 0);
+      return buf.subarray(0, bytesRead).toString("utf8") + "\n\n…[truncated]";
     } finally {
       await handle.close();
     }
@@ -225,7 +246,7 @@ export async function listNotes(args: { folder?: string; max_results?: number })
   const folder = sanitizeFolder(args.folder);
   const base = folder ? await resolveInVault(folder) : await canonicalRoot();
   const files = await walk(base);
-  const limit = Math.min(args.max_results ?? 50, 200);
+  const limit = normalizeLimit(args.max_results, 50, 200);
 
   // Bounded concurrency: a large vault shouldn't open thousands of stats at once.
   const withTimes: { path: string; title: string; modified: number }[] = [];
@@ -254,7 +275,7 @@ export async function listNotes(args: { folder?: string; max_results?: number })
 
 export async function searchVault(args: { query?: string; max_results?: number }) {
   const query = (args.query ?? "").trim();
-  const limit = Math.min(args.max_results ?? 8, 25);
+  const limit = normalizeLimit(args.max_results, 8, 25);
   const files = await walk(await canonicalRoot());
 
   if (files.length === 0) {

@@ -94,19 +94,27 @@ export function toLinearPriority(input: unknown): number | undefined {
   return LINEAR_PRIORITY[s];
 }
 
-/** Linear's API wants due dates as 'YYYY,MM,DD,hh,mm,ss', not ISO. */
+/**
+ * Linear's API wants due dates as 'YYYY,MM,DD,hh,mm,ss', not ISO.
+ *
+ * Read in UTC deliberately. A date-only ISO string ("2026-08-20") parses as
+ * UTC midnight, so local getters in any negative-offset zone would report the
+ * previous day and quietly set the due date a day early. UTC also keeps the
+ * result identical whether this runs on a local backend or in Convex cloud,
+ * rather than depending on the host's timezone.
+ */
 export function toLinearDate(input: unknown): string | undefined {
   if (!input) return undefined;
   const d = new Date(String(input));
   if (isNaN(d.getTime())) return undefined;
   const p = (n: number) => String(n).padStart(2, "0");
   return [
-    d.getFullYear(),
-    p(d.getMonth() + 1),
-    p(d.getDate()),
-    p(d.getHours()),
-    p(d.getMinutes()),
-    p(d.getSeconds()),
+    d.getUTCFullYear(),
+    p(d.getUTCMonth() + 1),
+    p(d.getUTCDate()),
+    p(d.getUTCHours()),
+    p(d.getUTCMinutes()),
+    p(d.getUTCSeconds()),
   ].join(",");
 }
 
@@ -164,6 +172,7 @@ export function shapeIssues(
     priority?: string;
     assignee?: string;
     project?: string;
+    teamId?: string;
     url?: string;
   }[];
 } {
@@ -181,6 +190,9 @@ export function shapeIssues(
       typeof i.priority === "number" ? LINEAR_PRIORITY_LABEL[i.priority] : undefined,
     assignee: i.assignee?.name ?? i.assignee?.displayName ?? undefined,
     project: i.project?.name ?? undefined,
+    // Workflow states are per-team, so keep the issue's own team id when the
+    // payload carries it — a state from another team would be rejected.
+    teamId: i.team?.id ?? i.teamId ?? undefined,
     url: i.url ?? undefined,
   }));
   return { count: issues.length, issues };
@@ -375,14 +387,24 @@ export const execute = action({
     /** Find an issue by its Linear key (ACM-12), or loosely by title. */
     const resolveIssue = async (
       spoken: string
-    ): Promise<{ issue?: { id: string; title: string; key?: string }; error?: ToolResult }> => {
+    ): Promise<{
+      issue?: { id: string; title: string; key?: string; teamId?: string };
+      error?: ToolResult;
+    }> => {
+      // An empty query must never reach the matchers: `"" === ""` would make
+      // the key comparison match the first issue that has no identifier.
+      const q = (spoken ?? "").trim().toLowerCase();
+      if (!q) {
+        return {
+          error: { error: "missing_issue", message: "Which issue? Name it by key or title." },
+        };
+      }
       const r = await linearExec("LINEAR_LIST_LINEAR_ISSUES", { first: 100 });
       if (!r.successful) {
         return { error: { error: "tool_failed", message: r.error ?? "Could not list issues" } };
       }
       // Match across everything we asked for, not just the display default.
       const { issues } = shapeIssues(r.data, 100);
-      const q = spoken.trim().toLowerCase();
       const byKey = issues.find((i) => (i.key ?? "").toLowerCase() === q);
       const hit =
         byKey ??
@@ -395,7 +417,7 @@ export const execute = action({
           },
         };
       }
-      return { issue: { id: hit.id, title: hit.title, key: hit.key } };
+      return { issue: { id: hit.id, title: hit.title, key: hit.key, teamId: hit.teamId } };
     };
 
     /* ------------ Airtable plumbing ------------ */
@@ -868,13 +890,18 @@ export const execute = action({
           const { projectId, error: projectErr } = await resolveProject(args.project);
           if (projectErr) return projectErr;
 
+          // An unparseable date would drop to undefined and the issue would be
+          // created with no due date at all, reported as success. Refuse instead.
+          const dueDate = toLinearDate(args.due_date);
+          if (args.due_date && !dueDate) return invalidDueDate(args.due_date);
+
           const result = await linearExec("LINEAR_CREATE_LINEAR_ISSUE", {
             team_id: team!.id,
             title,
             description: args.description ?? undefined,
             project_id: projectId,
             priority: toLinearPriority(args.priority),
-            due_date: toLinearDate(args.due_date),
+            due_date: dueDate,
           });
           if (!result.successful) return { error: "tool_failed", message: result.error };
 
@@ -957,13 +984,22 @@ export const execute = action({
           const { issue, error: issueErr } = await resolveIssue(spoken);
           if (issueErr) return issueErr;
 
-          // Workflow states are per-team, so a status change needs the team.
+          const dueDate = toLinearDate(args.due_date);
+          if (args.due_date && !dueDate) return invalidDueDate(args.due_date);
+
+          // Workflow states are per-team, and the team that matters is the
+          // issue's own — a state borrowed from a different team is rejected.
+          // Only ask for a team when the payload didn't carry one.
           let stateId: string | undefined;
           if (args.state) {
-            const { team, error: teamErr } = await resolveTeam(args.team);
-            if (teamErr) return teamErr;
+            let teamId = issue!.teamId;
+            if (!teamId) {
+              const { team, error: teamErr } = await resolveTeam(args.team);
+              if (teamErr) return teamErr;
+              teamId = team!.id;
+            }
             const statesRes = await linearExec("LINEAR_LIST_LINEAR_STATES", {
-              team_id: team!.id,
+              team_id: teamId,
             });
             // A failed lookup is not "no such state" — don't conflate them.
             if (!statesRes.successful) {
@@ -995,7 +1031,7 @@ export const execute = action({
             description: args.description ?? undefined,
             state_id: stateId,
             priority: toLinearPriority(args.priority),
-            due_date: toLinearDate(args.due_date),
+            due_date: dueDate,
           });
           if (!result.successful) return { error: "tool_failed", message: result.error };
           await log("completed", "Issue updated", issue!.title.slice(0, 60));
@@ -1008,8 +1044,12 @@ export const execute = action({
           if (blocked) return blocked;
           const body = String(args.body ?? "").trim();
           if (!body) return { error: "missing_body", message: "The comment is empty." };
+          const spokenIssue = String(args.issue ?? "").trim();
+          if (!spokenIssue) {
+            return { error: "missing_issue", message: "Which issue should I comment on?" };
+          }
           await setObjective("Commenting on Linear issue");
-          const { issue, error: issueErr } = await resolveIssue(String(args.issue ?? ""));
+          const { issue, error: issueErr } = await resolveIssue(spokenIssue);
           if (issueErr) return issueErr;
 
           const result = await linearExec("LINEAR_CREATE_LINEAR_COMMENT", {
@@ -1239,6 +1279,13 @@ export const execute = action({
     }
   },
 });
+
+function invalidDueDate(input: unknown): ToolResult {
+  return {
+    error: "invalid_due_date",
+    message: `"${String(input)}" isn't a date I can read. Resolve it yourself and pass ISO 8601, e.g. "2026-08-20" or "2026-08-20T17:00:00Z".`,
+  };
+}
 
 function normalizePriority(input: unknown): "high" | "normal" | "low" {
   const s = String(input ?? "normal").toLowerCase();
