@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useQuery } from "convex/react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -18,10 +19,10 @@ import {
   TriangleAlert,
   Newspaper,
   Activity,
+  NotebookPen,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
+import { useNow } from "@/hooks/useNow";
 
 const KIND_META: Record<string, { icon: React.ReactNode; color: string }> = {
   user_spoke: { icon: <Mic />, color: "text-sky-300" },
@@ -38,6 +39,7 @@ const KIND_META: Record<string, { icon: React.ReactNode; color: string }> = {
   error: { icon: <TriangleAlert />, color: "text-red-300" },
   memory_updated: { icon: <Brain />, color: "text-fuchsia-300" },
   briefing: { icon: <Newspaper />, color: "text-cyan-300" },
+  vault_write: { icon: <NotebookPen />, color: "text-emerald-300" },
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -48,8 +50,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   service: "Services",
 };
 
-function timeAgo(ts: number): string {
-  const s = Math.floor((Date.now() - ts) / 1000);
+function timeAgo(ts: number, now: number): string {
+  const s = Math.floor((now - ts) / 1000);
   if (s < 10) return "now";
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m`;
@@ -60,6 +62,7 @@ function timeAgo(ts: number): string {
 export function RightPanel() {
   const facts = useQuery(api.memory.list) ?? [];
   const events = useQuery(api.timeline.list) ?? [];
+  const now = useNow();
 
   const grouped = new Map<string, typeof facts>();
   for (const f of facts) {
@@ -139,7 +142,7 @@ export function RightPanel() {
                     <div className="flex items-baseline gap-2">
                       <p className="text-[12px] font-medium text-white/75">{e.label}</p>
                       <span className="mono ml-auto shrink-0 text-[9.5px] text-white/25">
-                        {timeAgo(e.createdAt)}
+                        {timeAgo(e.createdAt, now)}
                       </span>
                     </div>
                     {e.detail && (

@@ -10,6 +10,7 @@ export const SERVICES: Record<string, { name: string; description: string }> = {
   gmail: { name: "Gmail", description: "Read and search email" },
   googlecalendar: { name: "Google Calendar", description: "View and create events" },
   notion: { name: "Notion", description: "Search notes and documents" },
+  linear: { name: "Linear", description: "Track issues, projects, and sprints" },
 };
 
 export function getComposio() {

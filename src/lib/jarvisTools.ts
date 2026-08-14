@@ -21,6 +21,12 @@ Operational rules:
 - If asked what you know about the user, call "recall" and summarize warmly.
 - To-dos live natively in this platform (not Notion). Manage them with "add_todo", "complete_todo", "update_todo", "delete_todo", and "list_todos". Be proactive: if an email or meeting clearly implies an action item, offer to add it as a to-do. When the user references a to-do loosely ("the launch thing"), call "list_todos" first to find the right title.
 - Sending email: draft the message yourself from the user's intent, then read back the recipient, subject, and a one-line gist and ask for confirmation BEFORE calling "send_email". Never send without explicit verbal confirmation. If the user dictates a recipient address, repeat it back character-perfect. After sending, confirm briefly.
+- The user keeps an Obsidian vault on this machine. It is their second brain and your notebook — always available, no connection required. "search_vault" finds notes, "read_vault_note" reads one in full, "create_vault_note" writes a new one, "append_vault_note" adds to an existing one, "list_vault_notes" shows what exists. This is entirely SEPARATE from Notion: "search_notes"/"read_note" are Notion, the vault tools are local.
+- Be a diligent note-taker. When the user describes a client, a project, a meeting outcome, a decision, a spec, or an idea worth keeping, write it to the vault without waiting to be asked, then confirm in one line: "Filed under Clients, Acme." Prefer appending to an existing note over creating a near-duplicate — search first when unsure.
+- Vault folder conventions: client work → "Clients/<Client Name>", product and startup work → "Projects/<Project Name>", meeting notes → "Meetings", raw ideas → "Ideas", daily logs → "Daily". Pass the folder when creating a note; folders are created automatically.
+- Linear is the issue tracker for real client and product work: "create_linear_issue", "list_linear_issues", "update_linear_issue", "comment_on_linear_issue", "list_linear_projects". Three places hold tasks, keep them straight — "add_todo" is the user's own quick personal list, Linear is trackable work with a team and a workflow state, and the vault is for documents. If it sounds like client or product work, put it in Linear and say so.
+- Never read Linear issue ids aloud. Refer to issues by their key and title: "ACM-12, the checkout bug." Before updating an issue, call "list_linear_issues" if you are not certain which one they mean, and confirm the match in one line.
+- Division of labour between memory and the vault: short facts about the user ("prefers Cursor", "based in Nairobi") go to "remember". Anything with substance — notes, plans, specs, meeting records, research — goes to the vault.
 - Report failures honestly and suggest the next step. Never invent data.`;
 
 export const JARVIS_TOOLS = [
@@ -241,13 +247,189 @@ export const JARVIS_TOOLS = [
     type: "function",
     name: "connect_service",
     description:
-      "Begin the OAuth connection flow for an external service (Gmail, Google Calendar, or Notion). Opens an authentication window for the user.",
+      "Begin the OAuth connection flow for an external service (Gmail, Google Calendar, Notion, or Linear). Opens an authentication window for the user.",
     parameters: {
       type: "object",
       properties: {
-        service: { type: "string", description: "Service name, e.g. 'gmail', 'notion', 'google calendar'." },
+        service: {
+          type: "string",
+          description: "Service name, e.g. 'gmail', 'notion', 'google calendar', 'linear'.",
+        },
       },
       required: ["service"],
+    },
+  },
+  {
+    type: "function",
+    name: "create_linear_issue",
+    description:
+      "File a new issue in Linear. Use for bugs, tasks, and client requests that belong in the tracker rather than the personal to-do list.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short, action-oriented issue title." },
+        description: { type: "string", description: "Markdown body with the detail." },
+        project: {
+          type: "string",
+          description: "Linear project name, e.g. 'Acme Website'. Matched loosely.",
+        },
+        team: {
+          type: "string",
+          description:
+            "Linear team name. Omit it — if the workspace has one team it is chosen automatically.",
+        },
+        priority: { type: "string", enum: ["urgent", "high", "normal", "low", "none"] },
+        due_date: { type: "string", description: "Due date in ISO 8601." },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    type: "function",
+    name: "list_linear_issues",
+    description:
+      "List Linear issues, optionally filtered by project or by a text query matched against title, issue key, and project. Use before updating when unsure of the exact issue.",
+    parameters: {
+      type: "object",
+      properties: {
+        project: { type: "string", description: "Restrict to one Linear project." },
+        query: { type: "string", description: "Text to match against title, key, or project." },
+        limit: { type: "number", description: "Max issues to scan (default 25)." },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "update_linear_issue",
+    description:
+      "Change an existing Linear issue: move its workflow state, retitle it, reprioritize, or set a due date.",
+    parameters: {
+      type: "object",
+      properties: {
+        issue: {
+          type: "string",
+          description: "Issue key like 'ACM-12', or part of its title. Matched loosely.",
+        },
+        state: {
+          type: "string",
+          description: "Target workflow state, e.g. 'in progress', 'done', 'backlog'.",
+        },
+        team: { type: "string", description: "Team name, only if the workspace has several." },
+        title: { type: "string", description: "New title." },
+        description: { type: "string", description: "New Markdown description." },
+        priority: { type: "string", enum: ["urgent", "high", "normal", "low", "none"] },
+        due_date: { type: "string", description: "New due date in ISO 8601." },
+      },
+      required: ["issue"],
+    },
+  },
+  {
+    type: "function",
+    name: "comment_on_linear_issue",
+    description: "Add a comment to an existing Linear issue.",
+    parameters: {
+      type: "object",
+      properties: {
+        issue: { type: "string", description: "Issue key or part of its title." },
+        body: { type: "string", description: "Comment text, Markdown allowed." },
+      },
+      required: ["issue", "body"],
+    },
+  },
+  {
+    type: "function",
+    name: "list_linear_projects",
+    description:
+      "List the projects and teams in the user's Linear workspace. Use when they ask what's in Linear, or to confirm a project name before filing.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
+    name: "search_vault",
+    description:
+      "Search the user's local Obsidian vault by title and full text. Use this before creating a note, to check whether a related one already exists.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search text. Empty string returns recent notes." },
+        max_results: { type: "number", description: "Max notes to return (default 8)." },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "list_vault_notes",
+    description:
+      "List notes in the Obsidian vault, most recently modified first. Optionally restrict to one folder, e.g. 'Clients/Acme'.",
+    parameters: {
+      type: "object",
+      properties: {
+        folder: { type: "string", description: "Optional vault-relative folder to list." },
+        max_results: { type: "number" },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "read_vault_note",
+    description:
+      "Read the full Markdown content of one note in the Obsidian vault, so you can summarize it or read it back aloud.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Vault-relative path from a search result, e.g. 'Clients/Acme/Kickoff.md'.",
+        },
+        title: { type: "string", description: "Note title, when the exact path isn't known." },
+      },
+    },
+  },
+  {
+    type: "function",
+    name: "create_vault_note",
+    description:
+      "Create a new Markdown note in the Obsidian vault. Use for client notes, project specs, meeting records, and ideas. Never overwrites: an existing title gets a numbered suffix.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Note title; becomes the filename." },
+        content: {
+          type: "string",
+          description:
+            "Note body in Markdown. Write it properly structured with headings and bullets — this is a durable document, not a transcript.",
+        },
+        folder: {
+          type: "string",
+          description:
+            "Vault-relative folder, e.g. 'Clients/Acme', 'Projects/Landing Page', 'Meetings', 'Ideas'. Created if missing.",
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional Obsidian tags, e.g. ['client', 'proposal'].",
+        },
+      },
+      required: ["title"],
+    },
+  },
+  {
+    type: "function",
+    name: "append_vault_note",
+    description:
+      "Append a timestamped section to an existing vault note. Prefer this over creating a near-duplicate note when adding to an ongoing client log, project journal, or daily note.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Vault-relative path, if known." },
+        title: { type: "string", description: "Note title, when the exact path isn't known." },
+        content: { type: "string", description: "Markdown to append." },
+        heading: {
+          type: "string",
+          description: "Optional section heading. Defaults to the current date and time.",
+        },
+      },
+      required: ["content"],
     },
   },
   {

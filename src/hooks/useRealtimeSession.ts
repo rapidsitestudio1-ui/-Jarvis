@@ -20,6 +20,22 @@ interface RealtimeSession {
   notifySystem: (text: string) => void;
 }
 
+/**
+ * Tools served by the Next.js server instead of Convex. The Obsidian vault
+ * lives on the operator's local disk, which Convex actions cannot reach, so
+ * these dispatch to /api/obsidian rather than api.tools.execute.
+ */
+const VAULT_TOOLS = new Set([
+  "search_vault",
+  "list_vault_notes",
+  "read_vault_note",
+  "create_vault_note",
+  "append_vault_note",
+]);
+
+/** Upper bound on a local vault call before we report back and move on. */
+const VAULT_TIMEOUT_MS = 20000;
+
 function rms(analyser: AnalyserNode, buf: Uint8Array<ArrayBuffer>): number {
   analyser.getByteTimeDomainData(buf);
   let sum = 0;
@@ -141,12 +157,66 @@ export function useRealtimeSession(): RealtimeSession {
       }
       let result: Record<string, unknown>;
       try {
-        result = await executeTool({ name, arguments: args });
+        if (VAULT_TOOLS.has(name)) {
+          // A hung vault request would leave the model waiting forever for a
+          // function_call_output, so bound it and always resolve to a result.
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), VAULT_TIMEOUT_MS);
+          try {
+            const res = await fetch("/api/obsidian", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(authTokenRef.current
+                  ? { Authorization: `Bearer ${authTokenRef.current}` }
+                  : {}),
+              },
+              body: JSON.stringify({ name, arguments: args }),
+              signal: controller.signal,
+            });
+            result = res.ok
+              ? await res.json()
+              : {
+                  ok: false,
+                  error: res.status === 401 ? "vault_unauthorized" : "vault_request_failed",
+                  message:
+                    res.status === 401
+                      ? "The vault rejected the request — the session may have expired. Ask the user to reload."
+                      : `The vault request failed (HTTP ${res.status}).`,
+                };
+          } catch (err) {
+            result = controller.signal.aborted
+              ? {
+                  ok: false,
+                  error: "vault_timeout",
+                  message: `The vault did not respond within ${VAULT_TIMEOUT_MS / 1000} seconds.`,
+                }
+              : {
+                  ok: false,
+                  error: "vault_unreachable",
+                  message: err instanceof Error ? err.message : String(err),
+                };
+          } finally {
+            clearTimeout(timer);
+          }
+        } else {
+          result = await executeTool({ name, arguments: args });
+        }
       } catch (err) {
         result = { error: "execution_error", message: err instanceof Error ? err.message : String(err) };
       }
       if (result && (result as any).ok) {
         setOrb("success", { flashBackTo: "thinking", flashMs: 900 });
+        if (
+          (name === "create_vault_note" || name === "append_vault_note") &&
+          (result as any).path
+        ) {
+          void logTimeline({
+            kind: "vault_write",
+            label: name === "create_vault_note" ? "Note created" : "Note updated",
+            detail: String((result as any).path),
+          }).catch(() => {});
+        }
       } else {
         setOrb("thinking");
       }
@@ -160,7 +230,7 @@ export function useRealtimeSession(): RealtimeSession {
       });
       send({ type: "response.create" });
     },
-    [executeTool, send, setOrb]
+    [executeTool, logTimeline, send, setOrb]
   );
 
   const handleServerEvent = useCallback(

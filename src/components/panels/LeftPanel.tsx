@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { useQuery, useAction } from "convex/react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -13,12 +14,13 @@ import {
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import { GlassCard } from "../GlassCard";
+import { useNow } from "@/hooks/useNow";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-function timeAgo(ts?: number): string {
+function timeAgo(ts: number | undefined, now: number): string {
   if (!ts) return "never";
-  const s = Math.floor((Date.now() - ts) / 1000);
+  const s = Math.floor((now - ts) / 1000);
   if (s < 10) return "just now";
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
@@ -38,6 +40,7 @@ export function LeftPanel() {
   const objective = useQuery(api.objective.get);
   const connections = useQuery(api.connections.list) ?? [];
   const todos = useQuery(api.todos.list);
+  const now = useNow();
 
   const emails = dashboard.emails?.data as any;
   const calendar = dashboard.calendar?.data as any;
@@ -89,7 +92,7 @@ export function LeftPanel() {
               <AnimatedNumber value={emails.unread ?? 0} />
               <span className="text-[11px] text-white/40">unread</span>
               <span className="mono ml-auto text-[10px] text-white/25">
-                sync {timeAgo(emails.lastSync)}
+                sync {timeAgo(emails.lastSync, now)}
               </span>
             </div>
             <div className="space-y-1.5">
@@ -114,7 +117,7 @@ export function LeftPanel() {
               <AnimatedNumber value={calendar.todayCount ?? 0} />
               <span className="text-[11px] text-white/40">events today</span>
               <span className="mono ml-auto text-[10px] text-white/25">
-                sync {timeAgo(calendar.lastSync)}
+                sync {timeAgo(calendar.lastSync, now)}
               </span>
             </div>
             {calendar.nextMeeting && (
@@ -171,7 +174,7 @@ export function LeftPanel() {
                     }`}
                   />
                   <span className="truncate text-white/70">{t.title}</span>
-                  {t.dueAt && <DueChip dueAt={t.dueAt} />}
+                  {t.dueAt && <DueChip dueAt={t.dueAt} now={now} />}
                 </motion.div>
               ))}
               {todos.done.slice(0, 2).map((t) => (
@@ -215,7 +218,7 @@ export function LeftPanel() {
               </div>
             ))}
             <p className="mono pt-1 text-[10px] text-white/25">
-              {(notes.sources ?? []).join(" · ")} — sync {timeAgo(notes.lastSync)}
+              {(notes.sources ?? []).join(" · ")} — sync {timeAgo(notes.lastSync, now)}
             </p>
           </div>
         ) : (
@@ -228,7 +231,7 @@ export function LeftPanel() {
         <div className="space-y-2">
           {connections.length === 0 && <Empty text="Loading services…" />}
           {connections.map((c) => (
-            <ServiceRow key={c.toolkit} connection={c} />
+            <ServiceRow key={c.toolkit} connection={c} now={now} />
           ))}
         </div>
       </GlassCard>
@@ -236,7 +239,7 @@ export function LeftPanel() {
   );
 }
 
-function ServiceRow({ connection: c }: { connection: any }) {
+function ServiceRow({ connection: c, now }: { connection: any; now: number }) {
   const checkConnection = useAction(api.composio.checkConnection);
   const statusColor =
     c.status === "connected"
@@ -267,17 +270,16 @@ function ServiceRow({ connection: c }: { connection: any }) {
         </button>
       )}
       {c.status === "connected" && c.lastSync && (
-        <span className="mono text-[9.5px] text-white/20">{timeAgo(c.lastSync)}</span>
+        <span className="mono text-[9.5px] text-white/20">{timeAgo(c.lastSync, now)}</span>
       )}
     </div>
   );
 }
 
-function DueChip({ dueAt }: { dueAt: number }) {
-  const now = Date.now();
+function DueChip({ dueAt, now }: { dueAt: number; now: number }) {
   const overdue = dueAt < now;
   const d = new Date(dueAt);
-  const sameDay = d.toDateString() === new Date().toDateString();
+  const sameDay = d.toDateString() === new Date(now).toDateString();
   const label = sameDay
     ? d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });

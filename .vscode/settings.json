@@ -1,0 +1,10 @@
+{
+  // Use the TypeScript in node_modules (5.9.x), not VS Code's bundled copy.
+  // React 19's @types/react removed the global JSX namespace and moved it to
+  // React.JSX. An older TypeScript still resolves intrinsic elements through
+  // the global namespace, so every <div>/<span>/<p> reports
+  // "Property 'span' does not exist on type 'JSX.IntrinsicElements'"
+  // even though `npx tsc --noEmit` is clean.
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true
+}
